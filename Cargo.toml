@@ -1,0 +1,6 @@
+[package]
+name = "cmoose"
+version = "0.1.0"
+authors = ["ctames <ctames@email.wm.edu>"]
+
+[dependencies]
