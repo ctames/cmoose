@@ -1,6 +1,61 @@
 // TODO DOCUMENTATION
 
+// MAJOR TODO IMPLEMENT MAIN MEMORY 
+
+use std::io::prelude::*;
+use std::io::BufReader;
 use std::fmt;
+use std::fs::OpenOptions;
+use std::string::String;
+
+///////////
+//	PROGRAM STRUCT
+///////////
+
+pub struct Program {
+	pub source: Vec<Instruction>,
+	pub data: Vec<i16>,
+	pub source_len: usize, 
+}
+
+impl Program {
+	pub fn new(filename: String) -> Result<Program, &'static str> {
+		let mut prog = Program { 
+			source: Vec::new(),
+			data: Vec::new(),
+			source_len: 0,
+		};
+		let file = OpenOptions::new().read(true).open(filename);
+		let mut reader = BufReader::new(file.unwrap());
+		for line in reader.lines() {
+			match Instruction::new(line.unwrap().trim()) {
+				Ok(instr) => prog.source.push(instr),							 
+				Err(error) => {
+					return Err("errors in source file")
+				}	   	
+			}
+		}
+	
+		prog.source_len = prog.source.len();	
+		prog.data.extend_from_slice(&[0; 1000]);
+		Ok(prog)
+	}
+}
+
+impl Index<usize> for Program {
+	type Output = i16;
+
+	fn (index(&self, loc: usize) -> &i16 {
+		if loc < self.source_len {
+			
+		}
+	}
+
+}
+
+//////////
+//	REGISTERS STRUCT
+//////////
 
 pub struct Registers {
 	pub registers: Vec<i16>,
@@ -14,7 +69,8 @@ impl Registers {
 		Registers { 
 			registers: vec![0; 8],
 			pcreg: 0,
-			ireg: Instruction::new(0b0000000000000000),
+			// TODO change to use updated "new" function" perhaps
+			ireg: Instruction::new_from_binary(0b0000000000000000),
 		}
 	}
 }
@@ -30,8 +86,13 @@ impl fmt::Display for Registers {
 	}
 }
 
+//////////
+// ENUMS FOR INSTRUCTION STRUCT
+/////////
+
 #[derive(Debug)]
 #[derive(PartialEq)]
+#[derive(Clone)]
 enum Format {
 	RRR,
 	RRI,
@@ -39,6 +100,7 @@ enum Format {
 }
 
 #[derive(Debug)]
+#[derive(Clone)]
 enum Operation {
 	ADD,
 	ADDI,
@@ -50,6 +112,11 @@ enum Operation {
 	JALR
 }
 
+//////////
+//	INSTRUCTION STRUCT
+//////////
+
+#[derive(Clone)]
 pub struct Instruction {
 	binary_rep: u16,
 	format: Format,
@@ -62,7 +129,69 @@ pub struct Instruction {
 }
 
 impl Instruction {
-	pub fn new(binary: u16) -> Instruction {
+	// FOR CREATING AN INSTRUCTION FROM ASSEMBLY
+	pub fn new(line: &str) -> Result<Instruction, &'static str> {
+		let mut newin = Instruction { 
+			binary_rep: 0, 
+			format: Format::RRR,
+			op: Operation::ADD,
+			reg_a: 0,
+			reg_b: 0,
+			reg_c: 0,
+			s_immed: 0,
+			u_immed: 0
+		};
+
+		let mut line_split: Vec<&str> = line.split(" ").collect();
+		let mut fields_split: Vec<&str> = vec![];
+		if line_split.len() == 2 {
+			fields_split = line_split[1].split(",").collect();
+		}
+		match line_split[0] {
+			"add"    => {
+				newin.reg_a = usize::from_str_radix(fields_split[0], 10).unwrap();  	
+				newin.reg_b = usize::from_str_radix(fields_split[1], 10).unwrap();
+				newin.reg_c = usize::from_str_radix(fields_split[2], 10).unwrap();
+			}			
+			"addi"   => {
+				newin.format = Format::RRI;
+				newin.op = Operation::ADDI;
+				newin.reg_a = usize::from_str_radix(fields_split[0], 10).unwrap();  	
+				newin.reg_b = usize::from_str_radix(fields_split[1], 10).unwrap();
+				newin.s_immed = i8::from_str_radix(fields_split[2], 10).unwrap(); 
+			}			
+			"nand"   => { 			
+				newin.reg_a = usize::from_str_radix(fields_split[0], 10).unwrap();  	
+				newin.reg_b = usize::from_str_radix(fields_split[1], 10).unwrap();
+				newin.reg_c = usize::from_str_radix(fields_split[2], 10).unwrap();
+			}
+			"lui"    => {
+				newin.reg_a = usize::from_str_radix(fields_split[0], 10).unwrap();  	
+				newin.u_immed = u16::from_str_radix(fields_split[1], 10).unwrap(); 
+			} 			
+			/*
+			"sw"     => 			
+			"lw"     => 			
+			"beq"    => 			
+			"jalr"   => 			
+			"nop"    => 			
+			"halt"   => 			
+			"lli"    => 			
+			"movi"   => 			
+			".fill"  => 			
+			".space" =>
+			*/	
+			_ => {
+				return Err("invalid operation")
+			} 			
+		}
+		Ok(newin)		
+	}	
+
+	// FOR CREATING AN INSTRUCTION FROM BINARY
+	// NOT CURRENTLY USED IN ACTUAL OPERATION (PARSING A SOURCE FILE)
+	// DOES NOT SUPPORT DIRECTIVES OR SPECIAL OPERATIONS
+	pub fn new_from_binary(binary: u16) -> Instruction {
 		let mut new_instruction = Instruction { 
 			binary_rep: binary, 
 			format: Format::RRR,
@@ -116,12 +245,16 @@ impl Instruction {
 	
 impl fmt::Display for Instruction {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-		write!(f, "{:0b}\n format: {:?}\n op: {:?}\n reg_a: {}\n reg_b: {}\n reg_c: {}\n s_immed: {}\n u_immed: {}\n",
-		self.binary_rep, self.format, self.op, self.reg_a, self.reg_b, self.reg_c, self.s_immed, self.u_immed) 
+		write!(f, "format: {:?}\n op: {:?}\n reg_a: {}\n reg_b: {}\n reg_c: {}\n s_immed: {}\n u_immed: {}\n",
+			self.format, self.op, self.reg_a, self.reg_b, self.reg_c, self.s_immed, self.u_immed) 
 	}
 }
 
 // TODO finish
+///////////
+// EXECUTE INSTRUCTION FUNCTION
+//////////
+
 pub fn execute(cpuregs: &mut Registers) {
 	let ref instr = cpuregs.ireg; 
 	let ref mut regs = cpuregs.registers; 
