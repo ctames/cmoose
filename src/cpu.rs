@@ -1,12 +1,11 @@
-// TODO DOCUMENTATION
-
-// MAJOR TODO IMPLEMENT MAIN MEMORY 
-
 use std::io::prelude::*;
 use std::io::BufReader;
 use std::fmt;
 use std::fs::OpenOptions;
 use std::string::String;
+use std::ops::Index;
+
+static ZERO: i16 = 0;
 
 ///////////
 //	PROGRAM STRUCT
@@ -27,9 +26,14 @@ impl Program {
 		};
 		let file = OpenOptions::new().read(true).open(filename);
 		let mut reader = BufReader::new(file.unwrap());
+		let mut count = 0;
 		for line in reader.lines() {
 			match Instruction::new(line.unwrap().trim()) {
-				Ok(instr) => prog.source.push(instr),							 
+				Ok(mut instr) => {
+					instr.address = count;
+					prog.source.push(instr);
+					count = count + 1;							 
+				}
 				Err(error) => {
 					return Err("errors in source file")
 				}	   	
@@ -44,13 +48,20 @@ impl Program {
 
 impl Index<usize> for Program {
 	type Output = i16;
-
-	fn (index(&self, loc: usize) -> &i16 {
+	fn index(&self, loc: usize) -> &i16 {
 		if loc < self.source_len {
-			
+			if self.source[loc].op == Operation::FILL {
+				return &(self.source[loc].immed);
+			}	
+			else {
+				return &ZERO; 
+			}					
+		}
+		else {
+			let i = loc - self.source_len;
+			return &(self.data[i]);
 		}
 	}
-
 }
 
 //////////
@@ -69,7 +80,8 @@ impl Registers {
 		Registers { 
 			registers: vec![0; 8],
 			pcreg: 0,
-			// TODO change to use updated "new" function" perhaps
+			// TODO change to use updated "new" function perhaps, since support
+			// for instructions from binary isn't really working or being used
 			ireg: Instruction::new_from_binary(0b0000000000000000),
 		}
 	}
@@ -88,7 +100,7 @@ impl fmt::Display for Registers {
 
 //////////
 // ENUMS FOR INSTRUCTION STRUCT
-/////////
+//////////
 
 #[derive(Debug)]
 #[derive(PartialEq)]
@@ -100,6 +112,7 @@ enum Format {
 }
 
 #[derive(Debug)]
+#[derive(PartialEq)]
 #[derive(Clone)]
 enum Operation {
 	ADD,
@@ -109,7 +122,8 @@ enum Operation {
 	SW,
 	LW,
 	BEQ,
-	JALR
+	JALR,
+	FILL
 }
 
 //////////
@@ -126,6 +140,8 @@ pub struct Instruction {
 	reg_c: usize,
 	s_immed: i8,
 	u_immed: u16,
+	immed: i16,
+	address: i16,
 }
 
 impl Instruction {
@@ -139,7 +155,9 @@ impl Instruction {
 			reg_b: 0,
 			reg_c: 0,
 			s_immed: 0,
-			u_immed: 0
+			u_immed: 0,
+			immed: 0,
+			address: 0
 		};
 
 		let mut line_split: Vec<&str> = line.split(" ").collect();
@@ -161,27 +179,76 @@ impl Instruction {
 				newin.s_immed = i8::from_str_radix(fields_split[2], 10).unwrap(); 
 			}			
 			"nand"   => { 			
+				newin.op = Operation::NAND;
 				newin.reg_a = usize::from_str_radix(fields_split[0], 10).unwrap();  	
 				newin.reg_b = usize::from_str_radix(fields_split[1], 10).unwrap();
 				newin.reg_c = usize::from_str_radix(fields_split[2], 10).unwrap();
 			}
 			"lui"    => {
+				newin.format = Format::RI;
+				newin.op = Operation::LUI;
 				newin.reg_a = usize::from_str_radix(fields_split[0], 10).unwrap();  	
 				newin.u_immed = u16::from_str_radix(fields_split[1], 10).unwrap(); 
 			} 			
-			/*
-			"sw"     => 			
-			"lw"     => 			
-			"beq"    => 			
-			"jalr"   => 			
-			"nop"    => 			
-			"halt"   => 			
-			"lli"    => 			
-			"movi"   => 			
-			".fill"  => 			
-			".space" =>
-			*/	
+			"sw"     => { 			
+				newin.format = Format::RRI;
+				newin.op = Operation::SW;
+				newin.reg_a = usize::from_str_radix(fields_split[0], 10).unwrap();  	
+				newin.reg_b = usize::from_str_radix(fields_split[1], 10).unwrap();
+				newin.s_immed = i8::from_str_radix(fields_split[2], 10).unwrap(); 
+			}
+			"lw"     => { 			
+				newin.format = Format::RRI;
+				newin.op = Operation::LW;
+				newin.reg_a = usize::from_str_radix(fields_split[0], 10).unwrap();  	
+				newin.reg_b = usize::from_str_radix(fields_split[1], 10).unwrap();
+				newin.s_immed = i8::from_str_radix(fields_split[2], 10).unwrap(); 
+			}
+			"beq"    => { 			
+				newin.format = Format::RRI;
+				newin.op = Operation::BEQ;
+				newin.reg_a = usize::from_str_radix(fields_split[0], 10).unwrap();  	
+				newin.reg_b = usize::from_str_radix(fields_split[1], 10).unwrap();
+				newin.s_immed = i8::from_str_radix(fields_split[2], 10).unwrap(); 
+			}
+			"jalr"   => { 			
+				newin.format = Format::RRI;
+				newin.op = Operation::JALR;
+				newin.reg_a = usize::from_str_radix(fields_split[0], 10).unwrap();  	
+				newin.reg_b = usize::from_str_radix(fields_split[1], 10).unwrap();
+			}
+			"nop"    => {
+				// for a nop, replace with add 0,0,0
+				newin.reg_a = 0;
+				newin.reg_b = 0;
+				newin.reg_c = 0;	
+			} 			
+			"halt"   => {
+				// for a halt, replace with jalr 0,0 
+				newin.format = Format::RRI;
+				newin.op = Operation::JALR;
+				newin.reg_a = 0;
+				newin.reg_b = 0;
+			}			
+			"lli"    => {
+				// for a lli, replace with addi
+				newin.format = Format::RRI;
+				newin.op = Operation::ADDI;
+				newin.reg_a = usize::from_str_radix(fields_split[0], 10).unwrap();  		
+				newin.reg_b = usize::from_str_radix(fields_split[0], 10).unwrap();  	
+				newin.s_immed = i8::from_str_radix(fields_split[1], 10).unwrap();
+			}			
+			".fill"  => {
+				// fills are going to be treated somewhat special
+				// instead of replacing the address with the value,
+				// will exist as an "instruction" that merely contains an i16 value
+				// must exist only at end of program
+				// can be loaded but like rest of program, not written to
+				newin.op = Operation::FILL;
+				newin.immed = i16::from_str_radix(fields_split[0], 10).unwrap();
+			}				
 			_ => {
+				// anything else? invalid operation, exit
 				return Err("invalid operation")
 			} 			
 		}
@@ -200,7 +267,9 @@ impl Instruction {
 			reg_b: 0,
 			reg_c: 0,
 			s_immed: 0,
-			u_immed: 0
+			u_immed: 0,
+			immed: 0,
+			address: 0
 		};
 		
 		// get opcode to set operation/format
@@ -255,7 +324,7 @@ impl fmt::Display for Instruction {
 // EXECUTE INSTRUCTION FUNCTION
 //////////
 
-pub fn execute(cpuregs: &mut Registers) {
+pub fn execute(cpuregs: &mut Registers, prog: &mut Program) {
 	let ref instr = cpuregs.ireg; 
 	let ref mut regs = cpuregs.registers; 
 	match instr.op {
@@ -276,20 +345,46 @@ pub fn execute(cpuregs: &mut Registers) {
 		},
 		Operation::LUI => {
 			if instr.reg_a != 0 {
-				regs[instr.reg_a] = (regs[instr.reg_b] << 6) as i16;
+				regs[instr.reg_a] = (instr.u_immed << 6) as i16;
 			}
 		},
 		Operation::SW => {
-			// TODO implement after Main Memory is implemented
+			// can only store words in prog.memory
+			// if address is within the source, does nothing
+			let address = regs[instr.reg_b] + instr.s_immed as i16; 
+			if address >= prog.source_len as i16 {
+				prog.data[address as usize - prog.source_len] = regs[instr.reg_a];
+			}
 		},
 		Operation::LW => {
-			// TODO implement after Main Memory is implemented
+			// can only load words from memory or fill instructions
+			// loads a 0 if trying to load from a normal instruction in prog.source
+			let address = regs[instr.reg_b] + instr.s_immed as i16; 
+			if instr.reg_a != 0 {
+				regs[instr.reg_a] = prog[address as usize];	
+			}
 		},
 		Operation::BEQ => {
-			// TODO implement after Main Memory is implemented
+			if regs[instr.reg_a] == regs[instr.reg_b] {
+				cpuregs.pcreg = instr.address + 1 + instr.s_immed as i16;				
+			}
 		},
 		Operation::JALR => {
-			// TODO implement after Main Memory is implemented
+			// important here to handle jalr 0,0, which is a halt		
+			if instr.reg_a == 0 && instr.reg_b == 0 {
+				println!("reached HALT - exiting!");
+				exit(0); 
+			}
+			if instr.reg_a != 0 {
+				regs[instr.reg_a] = instr.address + 1;
+			}
+			cpuregs.pcreg = instr.address+1;
+		},
+		Operation::FILL => {
+			// DO NOTHING
+			// FILL INSTRUCTIONS SHOULD NEVER BE EXECUTED
+			// EXIST MERELY AS "INITIALIZED MEMORY" AT END OF PROG.SOURCE
+			// SHOULD ONLY COME AFTER A HALT
 		},
 	}
 }
