@@ -2,13 +2,34 @@ use std::io::prelude::*;
 use std::io::BufReader;
 use std::fmt;
 use std::fs::OpenOptions;
+use std::option::Option;
 use std::string::String;
 use std::ops::Index;
+use std::process::exit;
 
+// this is decalared as a hacky way to get out of a lifetime problem later
 static ZERO: i16 = 0;
+
+// CYCLES PER STAGE PER INSTRUCTION
+// ideally, you would be able pass a config to set cycles required per instr per stage
+// taking the easy way out right now and hardcoding it
+static addc:  [u8; 5] = [1, 1, 2, 1, 1]; 
+static addic: [u8; 5] = [1, 1, 2, 1, 1]; 
+static nandc: [u8; 5] = [1, 1, 2, 1, 1]; 
+static luic:  [u8; 5] = [1, 1, 2, 1, 1]; 
+static swc:   [u8; 5] = [1, 1, 2, 3, 1]; 
+static lwc:   [u8; 5] = [1, 1, 2, 3, 1]; 
+static beqc:  [u8; 5] = [1, 1, 1, 1, 1]; 
+static jalrc: [u8; 5] = [1, 1, 1, 1, 1];
+static haltc: [u8; 5] = [1, 1, 1, 1, 1];
 
 ///////////
 //	PROGRAM STRUCT
+//  represents a program as the source instructions and local memory as one struct
+//  instructions start at address 0, data at source_len
+//  instructions not readable or loadable, only memory
+//  ie. sw 1,0,17 will store value from <Register>.registers[1] to address 17, if 
+//  it is not an instruction space
 ///////////
 
 pub struct Program {
@@ -46,24 +67,6 @@ impl Program {
 	}
 }
 
-impl Index<usize> for Program {
-	type Output = i16;
-	fn index(&self, loc: usize) -> &i16 {
-		if loc < self.source_len {
-			if self.source[loc].op == Operation::FILL {
-				return &(self.source[loc].immed);
-			}	
-			else {
-				return &ZERO; 
-			}					
-		}
-		else {
-			let i = loc - self.source_len;
-			return &(self.data[i]);
-		}
-	}
-}
-
 //////////
 //	REGISTERS STRUCT
 //////////
@@ -71,7 +74,6 @@ impl Index<usize> for Program {
 pub struct Registers {
 	pub registers: Vec<i16>,
 	pub pcreg: i16,
-	pub ireg: Instruction,
 }
 
 impl Registers {
@@ -80,21 +82,17 @@ impl Registers {
 		Registers { 
 			registers: vec![0; 8],
 			pcreg: 0,
-			// TODO change to use updated "new" function perhaps, since support
-			// for instructions from binary isn't really working or being used
-			ireg: Instruction::new_from_binary(0b0000000000000000),
 		}
 	}
 }
 
 impl fmt::Display for Registers {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-		println!("CURRENT CPUREGS STATE");
+		println!("CURRENT REGISTERS STATE");
 		for x in 0..8 {
 			write!(f, "gpreg{} : {}\n", x, self.registers[x]);
 		}
 		write!(f, "pcreg: {}\n", self.pcreg);
-		write!(f, "ireg: {}\n", self.ireg)
 	}
 }
 
@@ -123,7 +121,7 @@ enum Operation {
 	LW,
 	BEQ,
 	JALR,
-	FILL
+	HALT
 }
 
 //////////
@@ -132,7 +130,7 @@ enum Operation {
 
 #[derive(Clone)]
 pub struct Instruction {
-	binary_rep: u16,
+	rep: String,
 	format: Format,
 	op: Operation,
 	reg_a: usize,
@@ -148,7 +146,7 @@ impl Instruction {
 	// FOR CREATING AN INSTRUCTION FROM ASSEMBLY
 	pub fn new(line: &str) -> Result<Instruction, &'static str> {
 		let mut newin = Instruction { 
-			binary_rep: 0, 
+			rep: String::from(line), 
 			format: Format::RRR,
 			op: Operation::ADD,
 			reg_a: 0,
@@ -219,16 +217,9 @@ impl Instruction {
 			}
 			"nop"    => {
 				// for a nop, replace with add 0,0,0
-				newin.reg_a = 0;
-				newin.reg_b = 0;
-				newin.reg_c = 0;	
 			} 			
 			"halt"   => {
-				// for a halt, replace with jalr 0,0 
-				newin.format = Format::RRI;
-				newin.op = Operation::JALR;
-				newin.reg_a = 0;
-				newin.reg_b = 0;
+				newin.op = Operation::HALT;
 			}			
 			"lli"    => {
 				// for a lli, replace with addi
@@ -238,15 +229,6 @@ impl Instruction {
 				newin.reg_b = usize::from_str_radix(fields_split[0], 10).unwrap();  	
 				newin.s_immed = i8::from_str_radix(fields_split[1], 10).unwrap();
 			}			
-			".fill"  => {
-				// fills are going to be treated somewhat special
-				// instead of replacing the address with the value,
-				// will exist as an "instruction" that merely contains an i16 value
-				// must exist only at end of program
-				// can be loaded but like rest of program, not written to
-				newin.op = Operation::FILL;
-				newin.immed = i16::from_str_radix(fields_split[0], 10).unwrap();
-			}				
 			_ => {
 				// anything else? invalid operation, exit
 				return Err("invalid operation")
@@ -254,78 +236,186 @@ impl Instruction {
 		}
 		Ok(newin)		
 	}	
-
-	// FOR CREATING AN INSTRUCTION FROM BINARY
-	// NOT CURRENTLY USED IN ACTUAL OPERATION (PARSING A SOURCE FILE)
-	// DOES NOT SUPPORT DIRECTIVES OR SPECIAL OPERATIONS
-	pub fn new_from_binary(binary: u16) -> Instruction {
-		let mut new_instruction = Instruction { 
-			binary_rep: binary, 
-			format: Format::RRR,
-			op: Operation::ADD,
-			reg_a: 0,
-			reg_b: 0,
-			reg_c: 0,
-			s_immed: 0,
-			u_immed: 0,
-			immed: 0,
-			address: 0
-		};
-		
-		// get opcode to set operation/format
-		match (binary & 0b1110000000000000) >> 13 {
-			0b000 => {}, 
-			0b001 => {new_instruction.format = Format::RRI; new_instruction.op = Operation::ADDI},
-			0b010 => new_instruction.op = Operation::NAND,
-			0b011 => {new_instruction.format = Format::RI; new_instruction.op = Operation::LUI},
-			0b100 => {new_instruction.format = Format::RRI; new_instruction.op = Operation::SW},
-			0b101 => {new_instruction.format = Format::RRI; new_instruction.op = Operation::LW},
-			0b110 => {new_instruction.format = Format::RRI; new_instruction.op = Operation::BEQ},
-			0b111 => new_instruction.op = Operation::JALR,
-			_ => println!("error: couldn't determine instruction format"),
-		} 
-
-		// get regA value
-		new_instruction.reg_a = ((binary & 0b0001110000000000) >> 10) as usize; 
-
-		// if RRR or RRI type, get regB value
-		if new_instruction.format == Format::RRR || new_instruction.format == Format::RRI {
-			new_instruction.reg_b = ((binary & 0b0000001110000000) >> 7) as usize;			
-		} 
-		
-		// if RRR
-		if new_instruction.format == Format::RRR {
-			new_instruction.reg_c = (binary & 0b0000000000000111) as usize;
-		}
-
-		// if RRI
-		if new_instruction.format == Format::RRI {
-			new_instruction.s_immed = (binary & 0b0000000001111111) as i8;
-		}
-		
-		// if RI
-		if new_instruction.format == Format::RI {
-			new_instruction.u_immed = (binary & 0b0000001111111111) as u16;
-		}
-		
-		new_instruction
-	}
-}	
+}
 	
 impl fmt::Display for Instruction {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-		write!(f, "format: {:?}\n op: {:?}\n reg_a: {}\n reg_b: {}\n reg_c: {}\n s_immed: {}\n u_immed: {}\n",
-			self.format, self.op, self.reg_a, self.reg_b, self.reg_c, self.s_immed, self.u_immed) 
+		write!(f, "{:?}", self.rep) 
 	}
 }
 
-// TODO finish
+///////////
+// STAGE STRUCT
+///////////
+
+#[derive(Clone)]
+pub struct Stage {
+    instr: Option<Instruction>,
+    ce: u8,
+    cn: u8
+}
+
+impl Stage {
+    pub fn set(&self, instr: &Instruction, stage: usize) {
+        self.instr = Some(instr.clone());
+        self.ce = 0;
+        match instr.op {
+            Operation::ADD => self.cn = addc[stage],
+            Operation::ADDI => self.cn = addic[stage],
+            Operation::NAND => self.cn = nandc[stage],
+            Operation::LUI => self.cn = luic[stage],
+            Operation::SW => self.cn = swc[stage],
+            Operation::LW => self.cn = lwc[stage],
+            Operation::BEQ => self.cn = beqc[stage],
+            Operation::JALR => self.cn = jalrc[stage],
+			Operation::HALT => self.cn = haltc[stage],
+		}
+    }   
+}
+
+//////////
+// PIPELINE STRUCT
+//////////
+
+pub struct Pipeline  {
+    stages: [Stage; 5],
+    regs: Registers, 
+	prog: Program, 
+	cycle: u8
+}
+
+impl Pipeline {
+    pub fn new(filename: String) -> Pipeline {
+        let mut stage = Stage {
+            instr: None,
+            ce: 0,
+            cn: 0,
+        };
+        Pipeline {
+            stages: [stage.clone(), stage.clone(), stage.clone(), stage.clone(), stage.clone()],
+            regs: Registers::new(),
+			prog: Program::new(filename.clone()).unwrap(),
+			cycle: 0
+        }
+    }
+
+    // THIS FUNCTION IS WHAT "RUNS" THE PIPELINE
+    // In terms of the approach, the idea is to "simulate" the work being done by the imaginary units
+    // of the cpu by waiting a number of cycles corresponding to the stage and the instruction.
+    // The result of a stage is effected (ie, register writing for WB)
+    // only once the stage is completed
+    // For a single cycle, stages are handled serially from the "top down", since for an instruction to
+    // move in the next stage, the instruction in front of me must be ready to move on as well
+    // The RR, WB, and ME (register erad, write back and memory access) stages are where real results are propagated,
+    // ie. a memory location updated by SW at completion of ME stage, register updates in (everything but SW, JALR, BEQ)
+	// WB, and BEQ, JALR in RR (decode) 
+	pub fn cycle(&self) {
+	    // HANDLE WB        
+        if self.stages[4].instr.is_some() {
+            if self.stages[4].ce == self.stages[4].cn {
+                let instr = self.stages[4].instr.unwrap();
+                match instr.op {
+					Operation::ADD => execute(self.instr, self.regs, self.prog),
+					Operation::ADDI => execute(self.instr, self.regs, self.prog),
+					Operation::NAND => execute(self.instr, self.regs, self.prog),
+					Operation::LUI => execute(self.instr, self.regs, self.prog),
+					Operation::LW => execute(self.instr, self.regs, self.prog),
+					Operation::HALT => execute(self.instr, self.regs, self.prog),
+					_ => ()
+				}
+				self.stages[4].instr = None;
+            }
+        }
+
+        // HANDLE ME
+        if self.stages[3].instr.is_some() {
+            if self.stages[3].ce == self.stages[3].cn {
+                let instr = self.stages[3].instr.unwrap();
+				match instr.op {
+					Operation::SW => execute(self.instr, self.reg, self.prog),
+					_ => ()
+				}
+			}
+            if self.stages[3].ce >= self.stage[3].cn  && self.stages[4].instr.is_none() {
+                let instr = self.stages[3].instr.unwrap();
+                self.stages[4].set(instr, 4);
+                self.stages[3].instr = None;
+            }
+        }
+
+        // HANDLE EX
+        // funnily enough, for our purposes, nothing is really done here. just fake computation latency
+		if self.stages[2].instr.is_some() {
+            if self.stages[2].ce >= self.stage[2].cn  && self.stages[3].instr.is_none() {
+                let instr = self.stages[2].instr.unwrap();
+                self.stages[3].set(instr, 3);
+                self.stages[2].instr = None;
+            }
+        }
+
+        // HANDLE RR
+        // THIS STAGE HANDLES JUMPS AND BRANCHES
+		if self.stages[1].instr.is_some() {
+            if self.stage[1].ce == self.stages[1].cn {
+                let instr = self.stages[1].instr.unwrap();
+				match instr.op {
+					Operation::BEQ | Operation::JALR => {
+						execute(self.instr, self.reg, self.prog);
+						self.stages[0].instr = Some(Instruction::new("add 0,0,0"));
+					}
+					_ => ()
+				}
+			}
+			if self.stages[1].ce >= self.stage[1].cn  && self.stages[2].instr.is_none() {
+                let instr = self.stages[1].instr.unwrap();
+                self.stages[2].set(instr, 2);
+                self.stages[1].instr = None;
+            }
+        }
+        
+		// HANDLE IF
+		if self.stages[0].instr.is_some() {
+            if self.stages[0].ce >= self.stage[0].cn  && self.stages[1].instr.is_none() {
+                let instr = self.stages[0].instr.unwrap();
+                self.stages[1].set(instr, 1);
+				if self.regs.pcreg < self.prog.source_len {
+					self.stages[0].instr = Some(self.prog.source[self.regs.pcreg]);		
+					self.regs.pcreg = self.regs.pcreg + 1;
+				}
+			}
+		} 
+		else {
+			if self.regs.pcreg < self.prog.source_len {
+				self.stages[0].instr = Some(self.prog.source[self.reg.pcreg]);		
+				self.regs.pcreg = self.regs.pcreg + 1;
+			}
+		}
+
+        self.cycle = self.cycle + 1;
+        for stage in self.stages {
+            self.stage.ce = self.stage.ce + 1;
+        }
+    }
+}
+
+impl fmt::Display for Pipeline {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		let default = Instruction::new("add 0,0,0");
+		write!(f, "STATE AFTER CYCLE: {:?}\n ", self.cycle); 
+		write!(f, "IF: {:?} - cycles {:?} out of {:?}\n", self.stages[0].instr.unwrap_or(default), self.stages[0].ce, self.stages[0].cn);
+		write!(f, "ID: {:?} - cycles {:?} out of {:?}\n", self.stages[1].instr.unwrap_or(default), self.stages[1].ce, self.stages[1].cn);
+		write!(f, "EX: {:?} - cycles {:?} out of {:?}\n", self.stages[2].instr.unwrap_or(default), self.stages[2].ce, self.stages[2].cn);
+		write!(f, "ME: {:?} - cycles {:?} out of {:?}\n", self.stages[3].instr.unwrap_or(default), self.stages[3].ce, self.stages[3].cn);
+		write!(f, "Wb: {:?} - cycles {:?} out of {:?}\n", self.stages[4].instr.unwrap_or(default), self.stages[4].ce, self.stages[4].cn);
+		write!(f, "{:?}", self.regs)
+	}
+}
+
 ///////////
 // EXECUTE INSTRUCTION FUNCTION
 //////////
 
-pub fn execute(cpuregs: &mut Registers, prog: &mut Program) {
-	let ref instr = cpuregs.ireg; 
+pub fn execute(instr: &Instruction, cpuregs: &mut Registers, prog: &mut Program) { 
 	let ref mut regs = cpuregs.registers; 
 	match instr.op {
 		Operation::ADD => {
@@ -370,21 +460,14 @@ pub fn execute(cpuregs: &mut Registers, prog: &mut Program) {
 			}
 		},
 		Operation::JALR => {
-			// important here to handle jalr 0,0, which is a halt		
-			if instr.reg_a == 0 && instr.reg_b == 0 {
-				println!("reached HALT - exiting!");
-				exit(0); 
-			}
 			if instr.reg_a != 0 {
 				regs[instr.reg_a] = instr.address + 1;
 			}
 			cpuregs.pcreg = instr.address+1;
 		},
-		Operation::FILL => {
-			// DO NOTHING
-			// FILL INSTRUCTIONS SHOULD NEVER BE EXECUTED
-			// EXIST MERELY AS "INITIALIZED MEMORY" AT END OF PROG.SOURCE
-			// SHOULD ONLY COME AFTER A HALT
-		},
+		Operation::HALT => {
+			println!("HALT has reached WB stage - exiting!");
+			exit(0);			
+		}
 	}
 }
