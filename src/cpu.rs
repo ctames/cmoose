@@ -92,7 +92,7 @@ impl fmt::Display for Registers {
 		for x in 0..8 {
 			write!(f, "gpreg{} : {}\n", x, self.registers[x]);
 		}
-		write!(f, "pcreg: {}\n", self.pcreg);
+		write!(f, "pcreg: {}\n", self.pcreg)
 	}
 }
 
@@ -256,7 +256,7 @@ pub struct Stage {
 }
 
 impl Stage {
-    pub fn set(&self, instr: &Instruction, stage: usize) {
+    pub fn set(&mut self, instr: &Instruction, stage: usize) {
         self.instr = Some(instr.clone());
         self.ce = 0;
         match instr.op {
@@ -278,7 +278,7 @@ impl Stage {
 //////////
 
 pub struct Pipeline  {
-    stages: [Stage; 5],
+    stages: Vec<Stage>,
     regs: Registers, 
 	prog: Program, 
 	cycle: u8
@@ -292,7 +292,7 @@ impl Pipeline {
             cn: 0,
         };
         Pipeline {
-            stages: [stage.clone(), stage.clone(), stage.clone(), stage.clone(), stage.clone()],
+            stages: vec![stage.clone(), stage.clone(), stage.clone(), stage.clone(), stage.clone()],
             regs: Registers::new(),
 			prog: Program::new(filename.clone()).unwrap(),
 			cycle: 0
@@ -309,18 +309,18 @@ impl Pipeline {
     // The RR, WB, and ME (register erad, write back and memory access) stages are where real results are propagated,
     // ie. a memory location updated by SW at completion of ME stage, register updates in (everything but SW, JALR, BEQ)
 	// WB, and BEQ, JALR in RR (decode) 
-	pub fn cycle(&self) {
+	pub fn cycle(&mut self) {
 	    // HANDLE WB        
         if self.stages[4].instr.is_some() {
             if self.stages[4].ce == self.stages[4].cn {
-                let instr = self.stages[4].instr.unwrap();
+                let instr = self.stages[4].clone().instr.unwrap();
                 match instr.op {
-					Operation::ADD => execute(self.instr, self.regs, self.prog),
-					Operation::ADDI => execute(self.instr, self.regs, self.prog),
-					Operation::NAND => execute(self.instr, self.regs, self.prog),
-					Operation::LUI => execute(self.instr, self.regs, self.prog),
-					Operation::LW => execute(self.instr, self.regs, self.prog),
-					Operation::HALT => execute(self.instr, self.regs, self.prog),
+					Operation::ADD => execute(&instr, &mut self.regs, &mut self.prog),
+					Operation::ADDI => execute(&instr, &mut self.regs, &mut self.prog),
+					Operation::NAND => execute(&instr, &mut self.regs, &mut self.prog),
+					Operation::LUI => execute(&instr, &mut self.regs, &mut self.prog),
+					Operation::LW => execute(&instr, &mut self.regs, &mut self.prog),
+					Operation::HALT => execute(&instr, &mut self.regs, &mut self.prog),
 					_ => ()
 				}
 				self.stages[4].instr = None;
@@ -330,15 +330,15 @@ impl Pipeline {
         // HANDLE ME
         if self.stages[3].instr.is_some() {
             if self.stages[3].ce == self.stages[3].cn {
-                let instr = self.stages[3].instr.unwrap();
+                let instr = self.stages[3].clone().instr.unwrap();
 				match instr.op {
-					Operation::SW => execute(self.instr, self.reg, self.prog),
+					Operation::SW => execute(&instr, &mut self.regs, &mut self.prog),
 					_ => ()
 				}
 			}
-            if self.stages[3].ce >= self.stage[3].cn  && self.stages[4].instr.is_none() {
-                let instr = self.stages[3].instr.unwrap();
-                self.stages[4].set(instr, 4);
+            if self.stages[3].ce >= self.stages[3].cn  && self.stages[4].instr.is_none() {
+                let instr = self.stages[3].clone().instr.unwrap();
+                self.stages[4].set(&instr, 4);
                 self.stages[3].instr = None;
             }
         }
@@ -346,9 +346,9 @@ impl Pipeline {
         // HANDLE EX
         // funnily enough, for our purposes, nothing is really done here. just fake computation latency
 		if self.stages[2].instr.is_some() {
-            if self.stages[2].ce >= self.stage[2].cn  && self.stages[3].instr.is_none() {
-                let instr = self.stages[2].instr.unwrap();
-                self.stages[3].set(instr, 3);
+            if self.stages[2].ce >= self.stages[2].cn  && self.stages[3].instr.is_none() {
+                let instr = self.stages[2].clone().instr.unwrap();
+                self.stages[3].set(&instr, 3);
                 self.stages[2].instr = None;
             }
         }
@@ -356,58 +356,59 @@ impl Pipeline {
         // HANDLE RR
         // THIS STAGE HANDLES JUMPS AND BRANCHES
 		if self.stages[1].instr.is_some() {
-            if self.stage[1].ce == self.stages[1].cn {
-                let instr = self.stages[1].instr.unwrap();
+            if self.stages[1].ce == self.stages[1].cn {
+                let instr = self.stages[1].clone().instr.unwrap();
 				match instr.op {
 					Operation::BEQ | Operation::JALR => {
-						execute(self.instr, self.reg, self.prog);
-						self.stages[0].instr = Some(Instruction::new("add 0,0,0"));
+						execute(&instr, &mut self.regs, &mut self.prog);
+						self.stages[0].instr = Some(Instruction::new("add 0,0,0").unwrap());
 					}
 					_ => ()
 				}
 			}
-			if self.stages[1].ce >= self.stage[1].cn  && self.stages[2].instr.is_none() {
-                let instr = self.stages[1].instr.unwrap();
-                self.stages[2].set(instr, 2);
+			if self.stages[1].ce >= self.stages[1].cn  && self.stages[2].instr.is_none() {
+                let instr = self.stages[1].clone().instr.unwrap();
+                self.stages[2].set(&instr, 2);
                 self.stages[1].instr = None;
             }
         }
         
 		// HANDLE IF
 		if self.stages[0].instr.is_some() {
-            if self.stages[0].ce >= self.stage[0].cn  && self.stages[1].instr.is_none() {
-                let instr = self.stages[0].instr.unwrap();
-                self.stages[1].set(instr, 1);
-				if self.regs.pcreg < self.prog.source_len {
-					self.stages[0].instr = Some(self.prog.source[self.regs.pcreg]);		
+            if self.stages[0].ce >= self.stages[0].cn  && self.stages[1].instr.is_none() {
+                let instr = self.stages[0].clone().instr.unwrap();
+                self.stages[1].set(&instr, 1);
+				if self.regs.pcreg < self.prog.source_len as i16 {
+					self.stages[0].set(&self.prog.source[self.regs.pcreg as usize], 0);
 					self.regs.pcreg = self.regs.pcreg + 1;
 				}
 			}
 		} 
 		else {
-			if self.regs.pcreg < self.prog.source_len {
-				self.stages[0].instr = Some(self.prog.source[self.reg.pcreg]);		
+			if self.regs.pcreg < self.prog.source_len as i16 {
+				self.stages[0].set(&self.prog.source[self.regs.pcreg as usize], 0);
 				self.regs.pcreg = self.regs.pcreg + 1;
 			}
 		}
 
+		// INCREMENT
         self.cycle = self.cycle + 1;
-        for stage in self.stages {
-            self.stage.ce = self.stage.ce + 1;
+        for stage in self.stages.iter_mut() {
+            stage.ce = stage.ce + 1;
         }
     }
 }
 
 impl fmt::Display for Pipeline {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-		let default = Instruction::new("add 0,0,0");
+		let default = Instruction::new("add 0,0,0").unwrap();
 		write!(f, "STATE AFTER CYCLE: {:?}\n ", self.cycle); 
-		write!(f, "IF: {:?} - cycles {:?} out of {:?}\n", self.stages[0].instr.unwrap_or(default), self.stages[0].ce, self.stages[0].cn);
-		write!(f, "ID: {:?} - cycles {:?} out of {:?}\n", self.stages[1].instr.unwrap_or(default), self.stages[1].ce, self.stages[1].cn);
-		write!(f, "EX: {:?} - cycles {:?} out of {:?}\n", self.stages[2].instr.unwrap_or(default), self.stages[2].ce, self.stages[2].cn);
-		write!(f, "ME: {:?} - cycles {:?} out of {:?}\n", self.stages[3].instr.unwrap_or(default), self.stages[3].ce, self.stages[3].cn);
-		write!(f, "Wb: {:?} - cycles {:?} out of {:?}\n", self.stages[4].instr.unwrap_or(default), self.stages[4].ce, self.stages[4].cn);
-		write!(f, "{:?}", self.regs)
+		write!(f, "IF: {} - cycles {:?} out of {:?}\n", self.stages[0].clone().instr.unwrap_or(default.clone()), self.stages[0].ce, self.stages[0].cn);
+		write!(f, "ID: {} - cycles {:?} out of {:?}\n", self.stages[1].clone().instr.unwrap_or(default.clone()), self.stages[1].ce, self.stages[1].cn);
+		write!(f, "EX: {} - cycles {:?} out of {:?}\n", self.stages[2].clone().instr.unwrap_or(default.clone()), self.stages[2].ce, self.stages[2].cn);
+		write!(f, "ME: {} - cycles {:?} out of {:?}\n", self.stages[3].clone().instr.unwrap_or(default.clone()), self.stages[3].ce, self.stages[3].cn);
+		write!(f, "WB: {} - cycles {:?} out of {:?}\n", self.stages[4].clone().instr.unwrap_or(default.clone()), self.stages[4].ce, self.stages[4].cn);
+		write!(f, "{}", self.regs)
 	}
 }
 
@@ -447,11 +448,9 @@ pub fn execute(instr: &Instruction, cpuregs: &mut Registers, prog: &mut Program)
 			}
 		},
 		Operation::LW => {
-			// can only load words from memory or fill instructions
-			// loads a 0 if trying to load from a normal instruction in prog.source
 			let address = regs[instr.reg_b] + instr.s_immed as i16; 
 			if instr.reg_a != 0 {
-				regs[instr.reg_a] = prog[address as usize];	
+				regs[instr.reg_a] = prog.data[address as usize - prog.source_len]; 
 			}
 		},
 		Operation::BEQ => {

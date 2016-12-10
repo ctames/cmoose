@@ -13,15 +13,15 @@ use std::process::exit;
 
 fn main() {
 	let options: Vec<_> = env::args().collect();
-	let mut pipeline = cpu::Pipeline::new(options[1]);
+	let mut pipeline = cpu::Pipeline::new(options[1].clone());
 	let mut input = String::new();
 	loop {
 		pipeline.cycle();
-		println!("{:?}\n\n\n", pipeline);
+		println!("{}\n\n\n", pipeline);
 		io::stdin().read_line(&mut input);
-		match input {
+		match input.trim() {
 			"" => (),
-			_ => exit(1)
+			_  => exit(1)
 		}		
 	}	
 }
